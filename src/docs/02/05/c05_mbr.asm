@@ -97,7 +97,7 @@
           
    infi: jmp near infi                 ;无限循环
       
-  number db 0,0,0,0,0
+  number db 0,0,0,0,0 ;声明字节
   
   times 203 db 0
             db 0x55,0xaa
