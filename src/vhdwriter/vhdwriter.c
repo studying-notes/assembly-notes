@@ -1,303 +1,229 @@
 /*
- * @Date: 2022.02.04 13:53
+ * @Date: 2022.02.05 20:54
  * @Description: Omit
  * @LastEditors: Rustle Karl
- * @LastEditTime: 2022.02.04 13:53
+ * @LastEditTime: 2022.02.05 20:54
  */
-
 #include <string.h>
 #include <stdarg.h>
+#include <getopt.h>
+#include <stdlib.h>
 
 #include "vhdwriter.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-int init_writer_object(writer_object *const wo_p, const char *const name) {
-    FILE *fp = fopen(name, "rb+");
+int init_vhd_writer(vhd_writer *writer, const char *vhd_file) {
+    FILE *fp = fopen(vhd_file, "rb+");
     if (fp == NULL) {
-        set_last_error(wo_p, OPEN_FILE_ERROR);
+        writer->error = OPEN_FILE_ERROR;
         return 0;
     }
-    wo_p->vhd_fp = fp;
-    wo_p->fixed = 0;
-    wo_p->valid = 0;
-    wo_p->size = 0;
-    wo_p->last_error = NO_ERROR;
+
+    writer->fp = fp;
+    writer->error = NO_ERROR;
+
     return 1;
 }
 
-void release_writer_object(writer_object *const wo_p) {
-    fclose(wo_p->vhd_fp);
+void release_vhd_writer(vhd_writer *writer) {
+    fclose(writer->fp);
 }
 
-int valid_vhd(writer_object *const wo_p) {
-    char vhd_cookie[9] = {0};
+int is_valid_vhd(vhd_writer *writer) {
+    char cookie[9] = {0};
     /* the beginning of last sector means VHD cookie */
-    fseek(wo_p->vhd_fp, -512, SEEK_END);
-    fread(vhd_cookie, 1, 8, wo_p->vhd_fp);
-    return strcmp(vhd_cookie, VHD_COOKIE_STRING) == 0 && (wo_p->valid = 1);
+    fseek(writer->fp, -512, SEEK_END);
+    fread(cookie, 1, 8, writer->fp);
+    return strcmp(cookie, "conectix") == 0 && (writer->valid = 1);
 }
 
-int fixed_vhd(writer_object *const wo_p) {
-    int vhd_type;
+int is_fixed_vhd(vhd_writer *writer) {
+    int type;
     /* the last sector with offset 0x3C means VHD type */
-    fseek(wo_p->vhd_fp, -512 + 0x3C, SEEK_END);
-    fread(&vhd_type, sizeof(int), 1, wo_p->vhd_fp);
-    return vhd_type == 0x02000000 && (wo_p->fixed = 1);
+    fseek(writer->fp, -512 + 0x3C, SEEK_END);
+    fread(&type, sizeof(int), 1, writer->fp);
+    return type == 0x02000000 && (writer->fixed = 1);
 }
 
-int64_t size_vhd(writer_object *const wo_p) {
-    int64_t size;
+uint64_t swap_big_little_endian_uint64(uint64_t val) {
+    val = ((val << 8) & 0xFF00FF00FF00FF00ULL) | ((val >> 8) & 0x00FF00FF00FF00FFULL);
+    val = ((val << 16) & 0xFFFF0000FFFF0000ULL) | ((val >> 16) & 0x0000FFFF0000FFFFULL);
+    return (val << 32) | (val >> 32);
+}
+
+uint64_t get_vhd_original_size(vhd_writer *writer) {
+    uint64_t size;
     /* the last sector with offset 0x28 means original size */
-    fseek(wo_p->vhd_fp, -512 + 0x28, SEEK_END);
-    fread(&size, sizeof(int64_t), 1, wo_p->vhd_fp);
+    fseek(writer->fp, -512 + 0x28, SEEK_END);
+    fread(&size, sizeof(int64_t), 1, writer->fp);
     /* reverse big-endian into little-endian */
-    char *p = (char *) &size, temp;
-    int i;
-    for (i = 0; i < sizeof(size) / 2; i++) {
-        temp = *p;
-        *(p + i) = *(p + 7 - i);
-        *(p + 7 - i) = temp;
-    }
-    return wo_p->size = size;
+    return writer->size = swap_big_little_endian_uint64(size);
 }
 
-int write_a_vhd_sector(writer_object *const wo_p, const int64_t lba, const vhd_sector *const sector_p) {
-    fseek(wo_p->vhd_fp, lba * 512, SEEK_SET);
-    return fwrite(sector_p->raw, 1, sector_p->valid_bytes, wo_p->vhd_fp);
+geometry get_vhd_geometry(vhd_writer *writer) {
+    geometry geo;
+    fseek(writer->fp, -512 + 0x38, SEEK_END);
+    fread(&geo, sizeof(geo), 1, writer->fp);
+    return geo;
 }
 
-int64_t write_hvd_sector_from_data_file(writer_object *const wo_p, const int64_t lba, const char *const name) {
-    int valid_bytes, written_bytes;
-    int64_t total_written_bytes = 0, lba_index = lba, lba_max = wo_p->size / 512;
-    if (lba_index < 0 || lba_index >= lba_max) {
-        set_last_error(wo_p, LBA_OUT_OF_RANGE);
+unsigned int write_one_vhd_sector(vhd_writer *writer, int sector_offset, vhd_sector *sector) {
+    fseek(writer->fp, sector_offset * 512, SEEK_SET);
+    return fwrite(sector->buffer, 1, sector->valid_bytes, writer->fp);
+}
+
+unsigned int write_to_vhd_from_binary_file(vhd_writer *writer, int sector_offset, char *bin_file) {
+    unsigned int valid_bytes, bytes_written;
+    unsigned int total_bytes_written = 0, total_sectors = writer->size / 512;
+
+    if (sector_offset < 0 || sector_offset >= total_sectors) {
+        writer->error = OFFSET_OUT_OF_RANGE;
         return 0;
     }
 
-    FILE *fp = fopen(name, "rb");
+    FILE *fp = fopen(bin_file, "rb");
     vhd_sector sector;
 
     if (fp == NULL) {
-        set_last_error(wo_p, OPEN_FILE_ERROR);
+        writer->error = OPEN_FILE_ERROR;
         return 0;
     }
 
     do {
-        valid_bytes = fread(sector.raw, 1, 512, fp);
+        valid_bytes = fread(sector.buffer, 1, 512, fp);
         sector.valid_bytes = valid_bytes;
-        written_bytes = write_a_vhd_sector(wo_p, lba_index++, &sector);
-        total_written_bytes += written_bytes;
-    } while (lba_index < lba_max && valid_bytes == 512 && written_bytes);
+        bytes_written = write_one_vhd_sector(writer, sector_offset++, &sector);
+        total_bytes_written += bytes_written;
+    } while (sector_offset < total_sectors && valid_bytes == 512 && bytes_written);
 
     fclose(fp);
-    return total_written_bytes;
+
+    return total_bytes_written;
 }
 
-writer_error get_last_error(const writer_object *const wo_p) {
-    return wo_p->last_error;
-}
-
-void set_last_error(writer_object *const wo_p, const writer_error last_error) {
-    wo_p->last_error = last_error;
-}
-
-
-void _err_msg(const char *const fmt, ...) {
+void printf_message(char *format, ...) {
     va_list vl;
-    va_start(vl, fmt);
-    vfprintf(stderr, fmt, vl);
-    fprintf(stderr, "\n");
+    va_start(vl, format);
+    vfprintf(stdout, format, vl);
+    fprintf(stdout, "\n");
     va_end(vl);
 }
 
-int64_t get_file_size(const char *const file) {
-    // http://c.biancheng.net/cpp/html/2421.html
-
-    fpos_t fpos_begin;
-    fpos_t fpos_end;
-
-    FILE *fp = fopen(file, "rb");
-    if (fp == NULL) {
-        return 0; /* error */
-    }
-
-    if (fgetpos(fp, &fpos_begin)) {
-        fclose(fp);
-        return 0;
-    } /* error */
-
-    fseek(fp, 0, SEEK_END);
-
-    if (fgetpos(fp, &fpos_end)) {
-        fclose(fp);
-        return 0;
-    } /* error */
-
-    fclose(fp);
-
-    // For Linux
-    // return fpos_end.__pos - fpos_begin.__pos;
-
-    // For Windows
-    return fpos_end - fpos_begin;
-}
-
-#define WRITER_ERROR(s, ...) _err_msg(s, ##__VA_ARGS__)
+#define WRITER_MESSAGE(s, ...) printf_message(s, ##__VA_ARGS__)
 
 int main(int argc, char **argv) {
-    writer_object wo;
+    char *help = "Fixed VHD Writer\n\n"
+                 "[-h] usage help\n"
+                 "[-s] show information about specify .vhd file\n"
+                 "[-v] specify .vhd file to write  [required]\n"
+                 "[-b] specify .bin file to read\n"
+                 "[-o] specify sector offset to write\n";
 
-    int state = 0;
-    char cc, nc;
-
-    char *vhd_file_name = NULL;
-    char *data_file_name = NULL;
-
-    int64_t lba;
-    option_flag last_option_flag = 0; /* 3 options must be set up */
-
-    if (argc < 3) {
-        WRITER_ERROR("Fixed VHD Writer\n"
-                     "[-h] usage help\n"
-                     "[-r] specify .bin file to read\n"
-                     "[-w] specify VHD file to write\n"
-                     "[-a] specify LBA mode to write\n");
+    if (argc <= 1) {
+        WRITER_MESSAGE(help);
         return -1;
     }
 
 
-    for (int i = 1; i < argc; i++) {
-        for (int j = 0; argv[i][j] != '\0'; j++) {
-            cc = argv[i][j];
-            nc = argv[i][j + 1];
+    vhd_writer writer;
+    char vhd_file[512] = {0}, bin_file[512] = {0};
+    int sector_offset = 0;
+    int show_geometry = 0;
 
-            switch (state) {
-                case -1:
-                    if (nc == '\0') state = 0;
-                    break;
+    int option;
+    char *options = "hv:b:o:s";
 
-                case 0:
-                    if (cc == '-') state = 1;
-                    break;
-
-                case 1: /* after accept '-' */
-                    if (cc == 'w' && nc == '\0') state = 2; /* VHD file name (write) */
-                    else if (cc == 'a' && nc == '\0') state = 3; /* LBA */
-                    else if (cc == 'r' && nc == '\0') state = 4; /* data file name (read) */
-                    else if (cc == 'h' && nc == '\0') state = 5; /* usage help */
-                    else {
-                        WRITER_ERROR("Invalid option \'%s\'", argv[i]);
-                        return -1;
-                    }
-                    break;
-
-                case 2: /* after accept '-w' */
-                    vhd_file_name = argv[i];
-                    last_option_flag |= FLAG_SET_VHD;
-                    state = -1;
-                    break;
-
-                case 3: /* after accept '-a' */
-                    sscanf(argv[i], "%lld", &lba);
-                    last_option_flag |= FLAG_SET_LBA;
-                    state = -1;
-                    break;
-
-                case 4: /* after accept '-r' */
-                    data_file_name = argv[i];
-                    last_option_flag |= FLAG_SET_DATA_FILE;
-                    state = -1;
-                    break;
-
-                default:
-                    WRITER_ERROR("Fixed VHD Writer\n"
-                                 "[-h] usage help\n"
-                                 "[-r] specify .bin file to read\n"
-                                 "[-w] specify VHD file to write\n"
-                                 "[-a] specify LBA mode to write\n");
-                    return -1;
-            }
+    while ((option = getopt(argc, argv, options)) != -1) {
+        switch (option) {
+            case 'h':
+                WRITER_MESSAGE(help);
+                return 0;
+            case 's':
+                show_geometry = 1;
+                break;
+            case 'v':
+                strcpy(vhd_file, optarg);
+                break;
+            case 'b':
+                strcpy(bin_file, optarg);
+                break;
+            case 'o':
+                sector_offset = atoi(optarg);
+                break;
+            default:
+                printf("default");
+                break;
         }
     }
 
-    if ((last_option_flag & FLAG_SET_VHD) == 0) {
-        WRITER_ERROR("VHD image file is not specified");
-        return -1;
-    } else if ((last_option_flag & FLAG_SET_LBA) == 0) {
-        WRITER_ERROR("LBA offset is not specified");
-        return -1;
-    } else if ((last_option_flag & FLAG_SET_DATA_FILE) == 0) {
-        WRITER_ERROR("Data file is not specified");
+    if (strlen(vhd_file) == 0) {
+        WRITER_MESSAGE("VHD image file is not specified");
         return -1;
     }
 
-    int64_t data_file_size;
-
-    init_writer_object(&wo, vhd_file_name);
-    if (get_last_error(&wo) == OPEN_FILE_ERROR) {
-        WRITER_ERROR("Open VHD image file error");
+    init_vhd_writer(&writer, vhd_file);
+    if (writer.error == OPEN_FILE_ERROR) {
+        WRITER_MESSAGE("Open %s file error", vhd_file);
         return -1;
     }
 
-    if (!valid_vhd(&wo)) {
-        WRITER_ERROR("Invalid or broken VHD image file");
-        release_writer_object(&wo);
+    if (!is_valid_vhd(&writer)) {
+        WRITER_MESSAGE("Invalid or broken VHD image file");
+        release_vhd_writer(&writer);
         return -1;
     }
 
-    if (!fixed_vhd(&wo)) {
-        WRITER_ERROR("The VHD image is not fixed which is still not support");
-        release_writer_object(&wo);
+
+    if (!is_fixed_vhd(&writer)) {
+        WRITER_MESSAGE("The VHD image is not fixed which is still not support");
+        release_vhd_writer(&writer);
         return -1;
     }
 
-    size_vhd(&wo);
+    uint64_t original_size = get_vhd_original_size(&writer);
 
-    /* read data from the data file, then write it to VHD image file */
-    data_file_size = get_file_size(data_file_name);
-    if (data_file_size == 0) {
-        WRITER_ERROR("Data file is invalid");
-        release_writer_object(&wo);
+    if (show_geometry) {
+        geometry geo = get_vhd_geometry(&writer);
+
+        fprintf(stdout,
+                "Original size: %lluMB\n"
+                "Cylinder: %d\n"
+                "Heads: %d\n"
+                "Sectors Per Cylinder: %d\n",
+                original_size >> 20, (geo.cylinder[0] << 4) + geo.cylinder[1],
+                geo.heads, geo.sectors_per_cylinder
+        );
+
+        return 0;
+    }
+
+    if (strlen(bin_file) == 0) {
+        WRITER_MESSAGE("binary file is not specified");
         return -1;
     }
 
-    int64_t total_written_bytes = write_hvd_sector_from_data_file(&wo, lba, data_file_name);
-    writer_error err = get_last_error(&wo);
-    if (err == LBA_OUT_OF_RANGE) {
-        WRITER_ERROR("LBA is out of range (0 - %d)", wo.size / 512 - 1);
-        release_writer_object(&wo);
+    unsigned int total_bytes_written = write_to_vhd_from_binary_file(&writer, sector_offset, bin_file);
+    writer_error error = writer.error;
+
+    if (error == OFFSET_OUT_OF_RANGE) {
+        WRITER_MESSAGE("sector_offset is out of range (0 - %d)", writer.size / 512 - 1);
+        release_vhd_writer(&writer);
         return -1;
-    } else if (err == OPEN_FILE_ERROR) {
-        WRITER_ERROR("Open data file error");
-        release_writer_object(&wo);
+    } else if (error == OPEN_FILE_ERROR) {
+        WRITER_MESSAGE("Open %s file error", bin_file);
+        release_vhd_writer(&writer);
         return -1;
     }
 
     fprintf(stdout,
             "Data: %s\n"
-            "VHD: %s (offset LBA: %lld)\n\n"
-            "Total bytes to write: %lld\n"
-            "Total sectors to write: %lld\n"
-            "Total bytes written: %lld\n"
-            "Total sectors written: %lld\n",
-            data_file_name, vhd_file_name, lba, data_file_size,
-            data_file_size / 512 + (data_file_size % 512 != 0), total_written_bytes,
-            total_written_bytes / 512 + (total_written_bytes % 512 != 0));
+            "VHD: %s (sector offset: %d)\n"
+            "Total bytes written: %u\n"
+            "Total sectors written: %u\n",
+            bin_file, vhd_file, sector_offset, total_bytes_written,
+            total_bytes_written / 512 + (total_bytes_written % 512 != 0));
 
-    if (total_written_bytes < data_file_size) {
-        fprintf(stdout,
-                "\n!!! Detected the tail of VHD image file, "
-                "the writing data has been truncated!\n");
-    }
-
-    release_writer_object(&wo);
+    release_vhd_writer(&writer);
 
     return 0;
 }
 
-#ifdef __cplusplus
-}
-#endif
