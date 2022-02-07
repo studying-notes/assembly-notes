@@ -10,17 +10,17 @@
   number db 0,0,0,0,0
 
   start:
-         mov ax,0x7c0                  ;设置数据段基地址
+         mov ax,0x7c0                  ;设置数据段基地址，该程序放入内存的段地址
          mov ds,ax
 
-         mov ax,0xb800                 ;设置附加段基地址
+         mov ax,0xb800                 ;设置附加段基地址，显存映射起始地址
          mov es,ax
 
-         cld
-         mov si,mytext
-         mov di,0
-         mov cx,(number-mytext)/2      ;实际上等于 13
-         rep movsw
+         cld  ;方向标志清零指令，以指示传送是正方向，低地址端到高地址端
+         mov si,mytext      ;设置 SI 寄存器的内容到源串的首地址，即标号 mytext 处的汇编地址
+         mov di,0    ;设置目的地的首地址到 DI 寄存器。第一个字符的位置为 0xB800 段的开始处，即偏移为 0
+         mov cx,(number-mytext)/2      ;实际上等于 13，设置要批量传送的字节数到 CX 寄存器，除以 2 的原因是每个要显示的字符实际上占两字节
+         rep movsw   ;重复执行 movsw 直到 CX 的内容为零
 
          ;得到标号所代表的偏移地址
          mov ax,number
@@ -50,7 +50,7 @@
 
          mov word [es:di],0x0744
 
-         jmp near $
+         jmp near $  ;$标记等同于标号，转移到当前指令继续执行
 
-  times 510-($-$$) db 0
+  times 510-($-$$) db 0 ; $$标记代表当前汇编段的起始汇编地址，计算需要填充的字节数
                    db 0x55,0xaa
