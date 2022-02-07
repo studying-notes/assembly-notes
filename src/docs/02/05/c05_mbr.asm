@@ -1,8 +1,8 @@
-         ;代码清单5-1 
+         ;代码清单5-1
          ;文件名：c05_mbr.asm
          ;文件说明：硬盘主引导扇区代码
-         ;创建日期：2011-3-31 21:15 
-         
+         ;创建日期：2011-3-31 21:15
+
          mov ax,0xb800                 ;指向文本模式的显示缓冲区
          mov es,ax
 
@@ -61,7 +61,7 @@
          div bx
          mov [0x7c00+number+0x03],dl   ;保存千位上的数字
 
-         ;求万位上的数字 
+         ;求万位上的数字
          xor dx,dx
          div bx
          mov [0x7c00+number+0x04],dl   ;保存万位上的数字
@@ -71,12 +71,12 @@
          add al,0x30
          mov [es:0x1a],al
          mov byte [es:0x1b],0x04
-         
+
          mov al,[0x7c00+number+0x03]
          add al,0x30
          mov [es:0x1c],al
          mov byte [es:0x1d],0x04
-         
+
          mov al,[0x7c00+number+0x02]
          add al,0x30
          mov [es:0x1e],al
@@ -91,13 +91,13 @@
          add al,0x30
          mov [es:0x22],al
          mov byte [es:0x23],0x04
-         
+
          mov byte [es:0x24],'D'
          mov byte [es:0x25],0x07
-          
+
    infi: jmp near infi                 ;无限循环
-      
+
   number db 0,0,0,0,0 ;声明字节
-  
+
   times 203 db 0
             db 0x55,0xaa
