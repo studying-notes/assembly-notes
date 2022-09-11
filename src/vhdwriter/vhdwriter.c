@@ -4,10 +4,10 @@
  * @LastEditors: Rustle Karl
  * @LastEditTime: 2022.02.05 20:54
  */
-#include <string.h>
-#include <stdarg.h>
 #include <getopt.h>
+#include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "vhdwriter.h"
 
@@ -18,15 +18,13 @@ int init_vhd_writer(vhd_writer *writer, const char *vhd_file) {
         return 0;
     }
 
-    writer->fp = fp;
+    writer->fp    = fp;
     writer->error = NO_ERROR;
 
     return 1;
 }
 
-void release_vhd_writer(vhd_writer *writer) {
-    fclose(writer->fp);
-}
+void release_vhd_writer(vhd_writer *writer) { fclose(writer->fp); }
 
 int is_valid_vhd(vhd_writer *writer) {
     char cookie[9] = {0};
@@ -80,7 +78,7 @@ unsigned int write_to_vhd_from_binary_file(vhd_writer *writer, int sector_offset
         return 0;
     }
 
-    FILE *fp = fopen(bin_file, "rb");
+    FILE      *fp = fopen(bin_file, "rb");
     vhd_sector sector;
 
     if (fp == NULL) {
@@ -89,9 +87,9 @@ unsigned int write_to_vhd_from_binary_file(vhd_writer *writer, int sector_offset
     }
 
     do {
-        valid_bytes = fread(sector.buffer, 1, 512, fp);
+        valid_bytes        = fread(sector.buffer, 1, 512, fp);
         sector.valid_bytes = valid_bytes;
-        bytes_written = write_one_vhd_sector(writer, sector_offset++, &sector);
+        bytes_written      = write_one_vhd_sector(writer, sector_offset++, &sector);
         total_bytes_written += bytes_written;
     } while (sector_offset < total_sectors && valid_bytes == 512 && bytes_written);
 
@@ -123,35 +121,22 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-
     vhd_writer writer;
-    char vhd_file[512] = {0}, bin_file[512] = {0};
-    int sector_offset = 0;
-    int show_geometry = 0;
+    char       vhd_file[512] = {0}, bin_file[512] = {0};
+    int        sector_offset = 0;
+    int        show_geometry = 0;
 
-    int option;
+    int   option;
     char *options = "hv:b:o:s";
 
     while ((option = getopt(argc, argv, options)) != -1) {
         switch (option) {
-            case 'h':
-                WRITER_MESSAGE(help);
-                return 0;
-            case 's':
-                show_geometry = 1;
-                break;
-            case 'v':
-                strcpy(vhd_file, optarg);
-                break;
-            case 'b':
-                strcpy(bin_file, optarg);
-                break;
-            case 'o':
-                sector_offset = atoi(optarg);
-                break;
-            default:
-                printf("default");
-                break;
+            case 'h': WRITER_MESSAGE(help); return 0;
+            case 's': show_geometry = 1; break;
+            case 'v': strcpy(vhd_file, optarg); break;
+            case 'b': strcpy(bin_file, optarg); break;
+            case 'o': sector_offset = atoi(optarg); break;
+            default: printf("default"); break;
         }
     }
 
@@ -172,7 +157,6 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-
     if (!is_fixed_vhd(&writer)) {
         WRITER_MESSAGE("The VHD image is not fixed which is still not support");
         release_vhd_writer(&writer);
@@ -189,9 +173,7 @@ int main(int argc, char **argv) {
                 "Cylinder: %d\n"
                 "Heads: %d\n"
                 "Sectors Per Cylinder: %d\n",
-                original_size >> 20, (geo.cylinder[0] << 4) + geo.cylinder[1],
-                geo.heads, geo.sectors_per_cylinder
-        );
+                original_size >> 20, (geo.cylinder[0] << 4) + geo.cylinder[1], geo.heads, geo.sectors_per_cylinder);
 
         return 0;
     }
@@ -202,7 +184,7 @@ int main(int argc, char **argv) {
     }
 
     unsigned int total_bytes_written = write_to_vhd_from_binary_file(&writer, sector_offset, bin_file);
-    writer_error error = writer.error;
+    writer_error error               = writer.error;
 
     if (error == OFFSET_OUT_OF_RANGE) {
         WRITER_MESSAGE("sector_offset is out of range (0 - %d)", writer.size / 512 - 1);
@@ -226,4 +208,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
